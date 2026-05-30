@@ -79,26 +79,74 @@ Client::send(
 
 // 发送 JSON 数据
 Client::send('my_queue', json_encode(['id' => 1, 'name' => 'test']));
+
+// 带成功/失败回调
+Client::send(
+    'my_queue',
+    'Hello World!',
+    'consumer',
+    'plugin.rabbitmq.rabbitmq',
+    [],
+    '',
+    'my_queue',
+    function($msg, $queue, $exchange, $routing_key) {
+        echo "发送成功！\n";
+        echo "消息: " . $msg->body . "\n";
+    },
+    function($e, $msg, $queue, $exchange, $routing_key) {
+        echo "发送失败：" . $e->getMessage() . "\n";
+    }
+);
+
+// 使用返回值判断
+try {
+    $result = Client::send('my_queue', 'Hello World!');
+    if ($result) {
+        echo "发送成功！\n";
+    }
+} catch (\Exception $e) {
+    echo "发送失败：" . $e->getMessage() . "\n";
+}
 ```
 
 ### 方式二：实例调用
 
 ```php
-use ssh\Amqp\Exception\Client;
+use ssh\Amqp\Client;
 
-$client = Client::connection('default');
+$client = Client::connection('consumer');
 
-// 发送消息到默认交换机
-$client->publish('my_queue', '', 'my_routing_key', 'Hello AMQP!');
+// 简单发送
+$result = $client->publish('my_queue', '', 'my_routing_key', 'Hello AMQP!');
+if ($result) {
+    echo "发送成功！\n";
+}
 
 // 发送消息到指定交换机
 $client->publish('my_queue', 'my_exchange', 'my_routing_key', 'Hello AMQP!');
+
+// 带回调的发送
+$client->publish(
+    'my_queue',
+    '',
+    'my_routing_key',
+    'Hello AMQP!',
+    false,
+    false,
+    0,
+    function($msg, $queue, $exchange, $routing_key) {
+        echo "发送成功！\n";
+    },
+    function($e, $msg, $queue, $exchange, $routing_key) {
+        echo "发送失败：" . $e->getMessage() . "\n";
+    }
+);
 ```
 
 ### 方式三：发送带属性的消息
 
 ```php
-use ssh\Amqp\Exception\Client;
+use ssh\Amqp\Client;
 use PhpAmqpLib\Message\AMQPMessage;
 
 $msg = new AMQPMessage('Hello World!', [
@@ -121,8 +169,8 @@ $client->publish('my_queue', 'my_exchange', 'my_routing_key', $msg);
 <?php
 namespace app\amqp;
 
-use ssh\Amqp\Exception\Client;
-use ssh\Amqp\Exception\Consumer;
+use ssh\Amqp\Client;
+use ssh\Amqp\Consumer;
 use PhpAmqpLib\Message\AMQPMessage;
 
 class MyConsumer implements Consumer
@@ -167,8 +215,8 @@ class MyConsumer implements Consumer
 <?php
 namespace app\amqp;
 
-use ssh\Amqp\Exception\Client;
-use ssh\Amqp\Exception\Consumer;
+use ssh\Amqp\Client;
+use ssh\Amqp\Consumer;
 use PhpAmqpLib\Message\AMQPMessage;
 
 class ExchangeConsumer implements Consumer
@@ -396,8 +444,8 @@ try {
 <?php
 namespace app\amqp;
 
-use ssh\Amqp\Exception\Client;
-use ssh\Amqp\Exception\Consumer;
+use ssh\Amqp\Client;
+use ssh\Amqp\Consumer;
 use PhpAmqpLib\Message\AMQPMessage;
 
 class MyConsumer implements Consumer
@@ -458,7 +506,7 @@ $client->close();
 在消费者进程中可以配置日志记录器：
 
 ```php
-use ssh\Amqp\Exception\Process\Consumer;
+use ssh\Amqp\Process\Consumer;
 use Monolog\Logger;
 use Monolog\Handler\StreamHandler;
 
@@ -475,12 +523,12 @@ $consumer->setLogger($logger);
 
 #### 静态方法
 
-- `Client::connection($name, $config)`: 获取连接实例
-- `Client::send($queue, $body, $properties, $exchange, $routing_key)`: 发送消息
+- `Client::connection($name = 'default', $config = null)`: 获取连接实例
+- `Client::send($queue, $body, $connection = 'default', $config = null, $properties = [], $exchange = '', $routing_key = null, $onSuccess = null, $onError = null)`: 发送消息，返回 bool
 
 #### 实例方法
 
-- `publish($queue, $exchange, $routing_key, $msg, $mandatory, $immediate, $ticket)`: 发布消息
+- `publish($queue, $exchange, $routing_key, $msg, $mandatory, $immediate, $ticket, $onSuccess, $onError)`: 发布消息，返回 bool
 - `declareQueue(...)`: 声明队列
 - `declareExchange(...)`: 声明交换机
 - `bindQueue(...)`: 绑定队列
@@ -495,6 +543,11 @@ $consumer->setLogger($logger);
 - `reconnect()`: 重新连接
 - `getChannel()`: 获取通道对象
 - `getConnection()`: 获取连接对象
+
+#### 回调参数说明
+
+- `$onSuccess`: 成功回调函数，参数为 `($msg, $queue, $exchange, $routing_key)`
+- `$onError`: 失败回调函数，参数为 `($e, $msg, $queue, $exchange, $routing_key)`
 
 ## 依赖
 

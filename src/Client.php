@@ -338,11 +338,15 @@ class Client
      * @param bool $mandatory
      * @param bool $immediate
      * @param int $ticket
+     * @param callable|null $onSuccess
+     * @param callable|null $onError
+     *
+     * @return bool
      *
      * @throws PublishException
      * @throws ConnectionException
      */
-    public function publish($queue, $exchange, $routing_key = '', $msg = null, $mandatory = false, $immediate = false, $ticket = 0)
+    public function publish($queue, $exchange, $routing_key = '', $msg = null, $mandatory = false, $immediate = false, $ticket = 0, $onSuccess = null, $onError = null)
     {
         if ($msg === null) {
             $msg = new AMQPMessage('');
@@ -363,31 +367,66 @@ class Client
                 $immediate,
                 $ticket
             );
+
+            if ($onSuccess) {
+                $onSuccess($msg, $queue, $exchange, $routing_key);
+            }
+
+            return true;
         } catch (ConnectionException $e) {
+            if ($onError) {
+                $onError($e, $msg, $queue, $exchange, $routing_key);
+            }
             throw $e;
         } catch (AMQPChannelException $e) {
-            throw new PublishException(
+            $publishException = new PublishException(
                 "Failed to publish message: " . $e->getMessage(),
                 $e->getCode(),
                 $e
             );
+            if ($onError) {
+                $onError($publishException, $msg, $queue, $exchange, $routing_key);
+            }
+            throw $publishException;
         } catch (\Exception $e) {
             if (!$this->isConnected()) {
-                $this->reconnect();
-                $this->_channel->basic_publish(
-                    $msg,
-                    $exchange,
-                    $routing_key,
-                    $mandatory,
-                    $immediate,
-                    $ticket
-                );
+                try {
+                    $this->reconnect();
+                    $this->_channel->basic_publish(
+                        $msg,
+                        $exchange,
+                        $routing_key,
+                        $mandatory,
+                        $immediate,
+                        $ticket
+                    );
+
+                    if ($onSuccess) {
+                        $onSuccess($msg, $queue, $exchange, $routing_key);
+                    }
+
+                    return true;
+                } catch (\Exception $reconnectException) {
+                    $publishException = new PublishException(
+                        "Failed to publish message after reconnect: " . $reconnectException->getMessage(),
+                        $reconnectException->getCode(),
+                        $reconnectException
+                    );
+                    if ($onError) {
+                        $onError($publishException, $msg, $queue, $exchange, $routing_key);
+                    }
+                    throw $publishException;
+                }
             } else {
-                throw new PublishException(
+                $publishException = new PublishException(
                     "Failed to publish message: " . $e->getMessage(),
                     $e->getCode(),
                     $e
                 );
+                if ($onError) {
+                    $onError($publishException, $msg, $queue, $exchange, $routing_key);
+                }
+                throw $publishException;
             }
         }
     }
@@ -673,11 +712,15 @@ class Client
      * @param array $properties
      * @param string $exchange
      * @param string $routing_key
+     * @param callable|null $onSuccess
+     * @param callable|null $onError
+     *
+     * @return bool
      *
      * @throws PublishException
      * @throws ConnectionException
      */
-    public static function send($queue, $body, $connection = 'default', $config = null, $properties = [], $exchange = '', $routing_key = null)
+    public static function send($queue, $body, $connection = 'default', $config = null, $properties = [], $exchange = '', $routing_key = null, $onSuccess = null, $onError = null)
     {
         $msg = new AMQPMessage($body, $properties);
         
@@ -686,7 +729,7 @@ class Client
             $routing_key = $queue;
         }
         
-        static::connection($connection, $config)->publish($queue, $exchange, $routing_key, $msg);
+        return static::connection($connection, $config)->publish($queue, $exchange, $routing_key, $msg, false, false, 0, $onSuccess, $onError);
     }
 
     /**
