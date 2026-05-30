@@ -668,6 +668,7 @@ class Client
     /**
      * @param string $queue
      * @param string $body
+     * @param string $connection
      * @param array $properties
      * @param string $exchange
      * @param string $routing_key
@@ -684,6 +685,7 @@ class Client
     /**
      * @param $name
      * @param $arguments
+     * @param string $connection
      * @return mixed
      */
     public static function __callStatic($name, $arguments, $connection = 'default')
