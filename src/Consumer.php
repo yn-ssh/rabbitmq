@@ -7,6 +7,8 @@
  */
 namespace ssh\Amqp;
 
+use PhpAmqpLib\Message\AMQPMessage;
+
 /**
  * Interface Consumer
  * @package ssh\Amqp
@@ -21,8 +23,8 @@ interface Consumer
     /**
      * @param string $data
      * @param array $properties
-     * @param mixed $delivery_tag
+     * @param AMQPMessage $msg
      * @param Client $client
      */
-    public function consume($data, $properties, $delivery_tag, $client);
+    public function consume($data, $properties, $msg, $client);
 }
