@@ -675,10 +675,10 @@ class Client
      * @throws PublishException
      * @throws ConnectionException
      */
-    public static function send($queue, $body, $properties = [], $exchange = '', $routing_key = '')
+    public static function send($queue, $body,$connection = 'default', $properties = [], $exchange = '', $routing_key = '')
     {
         $msg = new AMQPMessage($body, $properties);
-        static::connection('default')->publish($queue, $exchange, $routing_key, $msg);
+        static::connection($connection)->publish($queue, $exchange, $routing_key, $msg);
     }
 
     /**
@@ -686,9 +686,9 @@ class Client
      * @param $arguments
      * @return mixed
      */
-    public static function __callStatic($name, $arguments)
+    public static function __callStatic($name, $arguments, $connection = 'default')
     {
-        return static::connection('default')->{$name}(... $arguments);
+        return static::connection($connection)->{$name}(... $arguments);
     }
 
     /**
