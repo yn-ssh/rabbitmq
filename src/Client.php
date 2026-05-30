@@ -669,6 +669,7 @@ class Client
      * @param string $queue
      * @param string $body
      * @param string $connection
+     * @param string|null $config
      * @param array $properties
      * @param string $exchange
      * @param string $routing_key
@@ -676,21 +677,26 @@ class Client
      * @throws PublishException
      * @throws ConnectionException
      */
-    public static function send($queue, $body,$connection = 'default', $properties = [], $exchange = '', $routing_key = '')
+    public static function send($queue, $body, $connection = 'default', $config = null, $properties = [], $exchange = '', $routing_key = null)
     {
         $msg = new AMQPMessage($body, $properties);
-        static::connection($connection)->publish($queue, $exchange, $routing_key, $msg);
+        
+        // 如果没有指定 routing_key，使用队列名
+        if ($routing_key === null) {
+            $routing_key = $queue;
+        }
+        
+        static::connection($connection, $config)->publish($queue, $exchange, $routing_key, $msg);
     }
 
     /**
      * @param $name
      * @param $arguments
-     * @param string $connection
      * @return mixed
      */
-    public static function __callStatic($name, $arguments, $connection = 'default')
+    public static function __callStatic($name, $arguments)
     {
-        return static::connection($connection)->{$name}(... $arguments);
+        return static::connection()->{$name}(... $arguments);
     }
 
     /**

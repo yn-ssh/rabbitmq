@@ -55,10 +55,27 @@ return [
 ### 方式一：静态调用
 
 ```php
-use ssh\Amqp\Exception\Client;
+use ssh\Amqp\Client;
 
-// 发送字符串消息
+// 发送字符串消息（默认交换机，routing_key = 队列名）
 Client::send('my_queue', 'Hello World!');
+
+// 使用指定连接
+Client::send('my_queue', 'Hello World!', 'consumer');
+
+// 使用指定连接和配置
+Client::send('my_queue', 'Hello World!', 'consumer', 'plugin.rabbitmq.rabbitmq');
+
+// 发送到交换机
+Client::send(
+    'my_queue',                      // 队列名
+    'Hello World!',                  // 消息内容
+    'consumer',                      // 连接名
+    'plugin.rabbitmq.rabbitmq',      // 配置名（可选）
+    [],                              // 消息属性
+    'my_exchange',                   // 交换机名
+    'my_routing_key'                 // 路由键（可选，默认为队列名）
+);
 
 // 发送 JSON 数据
 Client::send('my_queue', json_encode(['id' => 1, 'name' => 'test']));
