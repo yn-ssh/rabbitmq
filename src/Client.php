@@ -642,7 +642,7 @@ class Client
     {
         if (!isset(static::$_connections[$name])) {
             if (empty($config)) {
-                $config = config('amqp', config('plugin.amqp.amqp', []));
+                $config = config('rabbitmq', config('plugin.rabbitmq.rabbitmq', []));
             } else {
                 $config = config($config, []);
             }
