@@ -3,6 +3,7 @@
   "description": "AMQP library wrapper for php-amqplib",
   "type": "library",
   "license": "MIT",
+  "version": "1.0.9",
   "authors": [
     {
       "name": "ssh",

@@ -10,6 +10,7 @@ namespace ssh\Amqp\Process;
 
 use ssh\Amqp\Client;
 use ssh\Amqp\Exception\AmqpException;
+use ssh\Amqp\Exception\ChannelException;
 use ssh\Amqp\Exception\ConnectionException;
 use support\Container;
 use Psr\Log\LoggerInterface;
@@ -29,6 +30,16 @@ class Consumer
      * @var LoggerInterface|null
      */
     protected $_logger = null;
+
+    /**
+     * @var array
+     */
+    protected $_consumerClasses = [];
+
+    /**
+     * @var array
+     */
+    protected $_connectionConfigs = [];
 
     /**
      * @var Client[]
@@ -65,6 +76,15 @@ class Consumer
     {
         if ($this->_logger) {
             $this->_logger->$level($message, $context);
+        } else {
+            $time = date('Y-m-d H:i:s');
+            $prefix = strtoupper($level);
+            $output = "[{$time}] [AMQP] [{$prefix}] {$message}";
+            if (!empty($context)) {
+                $output .= ' ' . json_encode($context, JSON_UNESCAPED_UNICODE);
+            }
+            $output .= PHP_EOL;
+            echo $output;
         }
     }
 
@@ -73,6 +93,8 @@ class Consumer
      */
     public function onWorkerStart()
     {
+        $this->log('info', 'AMQP Consumer starting up');
+        
         try {
             $dir_iterator = new \RecursiveDirectoryIterator($this->_consumerDir);
             $iterator = new \RecursiveIteratorIterator($dir_iterator);
@@ -92,23 +114,19 @@ class Consumer
                         continue;
                     }
 
-                    try {
-                        $this->setupConsumer($class);
-                    } catch (AmqpException $e) {
-                        $this->log('error', "Failed to setup consumer {$class}: " . $e->getMessage(), [
-                            'exception' => $e,
-                            'class' => $class
-                        ]);
-                    } catch (\Exception $e) {
-                        $this->log('error', "Unexpected error setting up consumer {$class}: " . $e->getMessage(), [
-                            'exception' => $e,
-                            'class' => $class
-                        ]);
-                    }
+                    $this->_consumerClasses[] = $class;
                 }
             }
 
-            $this->log('info', "All consumers setup completed, starting message loop");
+            $this->log('info', "Found " . count($this->_consumerClasses) . " consumers");
+
+            try {
+                $this->setupAllConsumers();
+            } catch (\Exception $e) {
+                $this->log('warning', "Failed to setup all consumers initially: " . $e->getMessage());
+            }
+
+            $this->log('info', "Starting message loop");
 
             $this->startMessageLoop();
 
@@ -120,34 +138,156 @@ class Consumer
     }
 
     /**
+     * Setup all consumers
+     */
+    protected function setupAllConsumers()
+    {
+        foreach ($this->_consumerClasses as $class) {
+            try {
+                $this->setupConsumer($class);
+            } catch (AmqpException $e) {
+                $this->log('error', "Failed to setup consumer {$class}: " . $e->getMessage(), [
+                    'exception' => $e,
+                    'class' => $class
+                ]);
+            } catch (\Exception $e) {
+                $this->log('error', "Unexpected error setting up consumer {$class}: " . $e->getMessage(), [
+                    'exception' => $e,
+                    'class' => $class
+                ]);
+            }
+        }
+    }
+
+    /**
+     * Reconnect all consumers
+     *
+     * @param string $connection_name
+     */
+    protected function reconnectAndReSetup($connection_name)
+    {
+        $this->log('warning', "Reconnecting and re-setting up all consumers for connection {$connection_name}");
+
+        try {
+            if (isset($this->_connections[$connection_name])) {
+                try {
+                    $this->_connections[$connection_name]->close();
+                } catch (\Exception $e) {
+                    $this->log('debug', "Error closing previous connection: " . $e->getMessage());
+                }
+                unset($this->_connections[$connection_name]);
+            }
+
+            $config = $this->_connectionConfigs[$connection_name] ?? '';
+            $connection = Client::createNewConnection($connection_name, $config);
+            $this->_connections[$connection_name] = $connection;
+
+            foreach ($this->_consumerClasses as $class) {
+                try {
+                    $consumer = Container::get($class);
+                    $consumer_connection = $consumer->connection ?? 'default';
+                    
+                    if ($consumer_connection === $connection_name) {
+                        $this->setupConsumer($class, $connection);
+                    }
+                } catch (\Exception $e) {
+                    $this->log('error', "Error re-setting up consumer {$class}: " . $e->getMessage());
+                }
+            }
+
+            $this->log('info', "Successfully reconnected and re-setup consumers for connection {$connection_name}");
+
+            return true;
+        } catch (\Exception $e) {
+            $this->log('error', "Failed to reconnect and re-setup: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    /**
      * Start the message consumption loop
      */
     protected function startMessageLoop()
     {
         while (true) {
             try {
+                $needCheckNewConnections = count($this->_connections) < count($this->_consumerClasses);
+                
+                if ($needCheckNewConnections) {
+                    $this->checkAndSetupMissingConsumers();
+                }
+
                 foreach ($this->_connections as $connection_name => $connection) {
                     if (!$connection->isConnected()) {
                         $this->log('warning', "Connection {$connection_name} is disconnected, attempting to reconnect");
-                        try {
-                            $connection->reconnect();
-                            $this->log('info', "Connection {$connection_name} reconnected successfully");
-                        } catch (ConnectionException $e) {
-                            $this->log('error', "Failed to reconnect to {$connection_name}: " . $e->getMessage(), [
-                                'exception' => $e
-                            ]);
+                        
+                        $success = false;
+                        $attempt = 1;
+                        
+                        while (!$success) {
+                            try {
+                                $this->log('debug', "Reconnection attempt #{$attempt} for connection {$connection_name}");
+                                
+                                $result = $this->reconnectAndReSetup($connection_name);
+                                
+                                if ($result) {
+                                    $success = true;
+                                    $this->log('info', "Connection {$connection_name} successfully reconnected and consumers restored (attempt #{$attempt})");
+                                    
+                                    usleep(500000);
+                                    break;
+                                }
+                            } catch (\Exception $e) {
+                                $this->log('error', "Reconnection attempt #{$attempt} failed: " . $e->getMessage());
+                            }
+                            
+                            if (!$success) {
+                                $sleep_time = min(pow(2, min($attempt, 10)), 30);
+                                $this->log('debug', "Waiting {$sleep_time} seconds before next reconnection attempt");
+                                sleep($sleep_time);
+                                $attempt++;
+                            }
+                        }
+                        
+                        if (!$success) {
                             continue;
                         }
                     }
 
                     try {
-                        $connection->wait(1);
+                        $result = $connection->wait(1);
+                        
+                        if ($result === false) {
+                            continue;
+                        }
+                    } catch (ChannelException $e) {
+                        $this->log('warning', "Channel error on connection {$connection_name}: " . $e->getMessage());
+                        
+                        try {
+                            $this->reconnectAndReSetup($connection_name);
+                        } catch (\Exception $reconnectException) {
+                            $this->log('error', "Failed to reconnect after channel error: " . $reconnectException->getMessage());
+                        }
+                        
+                        sleep(1);
+                    } catch (ConnectionException $e) {
+                        $this->log('warning', "Connection error on {$connection_name}: " . $e->getMessage());
+                        
+                        try {
+                            $this->reconnectAndReSetup($connection_name);
+                        } catch (\Exception $reconnectException) {
+                            $this->log('error', "Failed to reconnect after connection error: " . $reconnectException->getMessage());
+                        }
+                        
+                        sleep(1);
                     } catch (\Exception $e) {
-                        $this->log('error', "Error waiting for messages on connection {$connection_name}: " . $e->getMessage(), [
-                            'exception' => $e
-                        ]);
+                        $this->log('error', "Error waiting for messages on connection {$connection_name}: " . $e->getMessage());
+                        sleep(1);
                     }
                 }
+                
+                usleep(100000);
+                
             } catch (\Exception $e) {
                 $this->log('error', "Error in message loop: " . $e->getMessage(), [
                     'exception' => $e
@@ -158,13 +298,38 @@ class Consumer
     }
 
     /**
+     * Check and setup consumers that haven't been connected yet
+     */
+    protected function checkAndSetupMissingConsumers()
+    {
+        foreach ($this->_consumerClasses as $class) {
+            try {
+                $consumer = Container::get($class);
+                $connection_name = $consumer->connection ?? 'default';
+                
+                if (!isset($this->_connections[$connection_name])) {
+                    $this->log('info', "Attempting to setup consumer {$class} for the first time");
+                    try {
+                        $this->setupConsumer($class);
+                    } catch (\Exception $e) {
+                        $this->log('warning', "Failed to setup consumer {$class}: " . $e->getMessage());
+                    }
+                }
+            } catch (\Exception $e) {
+                $this->log('warning', "Error checking consumer {$class}: " . $e->getMessage());
+            }
+        }
+    }
+
+    /**
      * Setup a single consumer
      *
      * @param string $class
+     * @param Client|null $connection
      *
      * @throws AmqpException
      */
-    protected function setupConsumer($class)
+    protected function setupConsumer($class, $connection = null)
     {
         $consumer = Container::get($class);
         $connection_name = $consumer->connection ?? 'default';
@@ -178,10 +343,13 @@ class Consumer
             'connection' => $connection_name
         ]);
 
-        $connection = Client::connection($connection_name, $config);
+        if ($connection === null) {
+            $connection = Client::connection($connection_name, $config);
+        }
 
         if (!isset($this->_connections[$connection_name])) {
             $this->_connections[$connection_name] = $connection;
+            $this->_connectionConfigs[$connection_name] = $config;
         }
 
         if (isset($consumer->exchange)) {

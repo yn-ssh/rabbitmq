@@ -60,6 +60,11 @@ class Client
     /**
      * @var array
      */
+    protected $_consumers = [];
+
+    /**
+     * @var array
+     */
     protected $_config = [];
 
     /**
@@ -183,6 +188,27 @@ class Client
     {
         $this->close();
         $this->connect();
+        
+        if (!empty($this->_consumers)) {
+            foreach ($this->_consumers as $consumer) {
+                $queue = $consumer['queue'];
+                $consumer_tag = $consumer['consumer_tag'];
+                $no_ack = $consumer['no_ack'];
+                $callback = $consumer['callback'];
+                $nowait = $consumer['nowait'];
+                $ticket = $consumer['ticket'];
+                
+                $this->_channel->basic_consume(
+                    $queue,
+                    $consumer_tag,
+                    false,
+                    $no_ack,
+                    $nowait,
+                    $ticket,
+                    $callback
+                );
+            }
+        }
     }
 
     /**
@@ -438,6 +464,10 @@ class Client
      */
     public function cancel($consumer_tag)
     {
+        if ($this->_channel === null) {
+            throw new ChannelException("Channel not available");
+        }
+
         try {
             $this->_channel->basic_cancel($consumer_tag);
         } catch (AMQPChannelException $e) {
@@ -471,7 +501,23 @@ class Client
      */
     public function consume($queue, $consumer_tag = '', $no_local = false, $no_ack = false, $exclusive = false, $nowait = false, $callback = null, $ticket = 0, $arguments = null)
     {
+        if ($this->_channel === null) {
+            throw new ConsumeException("Channel not available");
+        }
+
         try {
+            $this->_consumers[] = [
+                'queue' => $queue,
+                'consumer_tag' => $consumer_tag,
+                'no_local' => $no_local,
+                'no_ack' => $no_ack,
+                'exclusive' => $exclusive,
+                'nowait' => $nowait,
+                'callback' => $callback,
+                'ticket' => $ticket,
+                'arguments' => $arguments,
+            ];
+            
             return $this->_channel->basic_consume(
                 $queue,
                 $consumer_tag,
@@ -507,6 +553,10 @@ class Client
      */
     public function ack($msg, $multiple = false, $requeue = false)
     {
+        if ($this->_channel === null) {
+            throw new ChannelException("Channel not available");
+        }
+
         try {
             if ($requeue) {
                 $this->_channel->basic_nack($msg->getDeliveryTag(), $multiple, $requeue);
@@ -537,6 +587,10 @@ class Client
      */
     public function nack($msg, $multiple = false, $requeue = false)
     {
+        if ($this->_channel === null) {
+            throw new ChannelException("Channel not available");
+        }
+
         try {
             $this->_channel->basic_nack($msg->getDeliveryTag(), $multiple, $requeue);
         } catch (AMQPChannelException $e) {
@@ -562,6 +616,10 @@ class Client
      */
     public function reject($msg, $requeue = false)
     {
+        if ($this->_channel === null) {
+            throw new ChannelException("Channel not available");
+        }
+
         try {
             $this->_channel->basic_reject($msg->getDeliveryTag(), $requeue);
         } catch (AMQPChannelException $e) {
@@ -589,6 +647,10 @@ class Client
      */
     public function qos($consumer_tag = null, $prefetch_count = 0, $prefetch_size = 0, $global = false)
     {
+        if ($this->_channel === null) {
+            throw new ChannelException("Channel not available");
+        }
+
         try {
             $this->_channel->basic_qos($prefetch_size, $prefetch_count, $global);
         } catch (AMQPChannelException $e) {
@@ -630,17 +692,32 @@ class Client
     public function wait($timeout = null)
     {
         try {
+            if (!$this->isConnected()) {
+                return false;
+            }
+            
             $this->_channel->wait(null, false, $timeout);
             return true;
         } catch (AMQPTimeoutException $e) {
+            if (!$this->isConnected()) {
+                return false;
+            }
             return false;
         } catch (AMQPChannelException $e) {
+            if (!$this->isConnected()) {
+                return false;
+            }
             throw new ChannelException(
                 "Error waiting for message: " . $e->getMessage(),
                 $e->getCode(),
                 $e
             );
+        } catch (AMQPConnectionException $e) {
+            return false;
         } catch (\Exception $e) {
+            if (!$this->isConnected()) {
+                return false;
+            }
             throw new ChannelException(
                 "Error waiting for message: " . $e->getMessage(),
                 $e->getCode(),
@@ -702,6 +779,54 @@ class Client
         }
 
         return static::$_connections[$name];
+    }
+
+    /**
+     * Create a new connection without using the singleton cache
+     *
+     * @param string $name
+     * @param string|null $config
+     * @return Client
+     */
+    public static function createNewConnection($name = 'default', $config = null)
+    {
+        if (empty($config)) {
+            $config = config('rabbitmq', config('plugin.rabbitmq.rabbitmq', []));
+        } else {
+            $config = config($config, []);
+        }
+
+        if (!isset($config[$name])) {
+            throw new \RuntimeException("AMQP connection $name not found");
+        }
+
+        $host = $config[$name]['host'];
+        $port = $config[$name]['port'] ?? 5672;
+        $user = $config[$name]['user'] ?? 'guest';
+        $password = $config[$name]['password'] ?? 'guest';
+        $vhost = $config[$name]['vhost'] ?? '/';
+        $options = $config[$name]['options'] ?? [];
+
+        $client = new static($host, $port, $user, $password, $vhost, $options);
+        
+        return $client;
+    }
+
+    /**
+     * Clear connection from singleton cache
+     *
+     * @param string $name
+     */
+    public static function clearConnection($name = 'default')
+    {
+        if (isset(static::$_connections[$name])) {
+            try {
+                static::$_connections[$name]->close();
+            } catch (\Exception $e) {
+                // Ignore
+            }
+            unset(static::$_connections[$name]);
+        }
     }
 
     /**

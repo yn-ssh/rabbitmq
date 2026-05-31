@@ -7,6 +7,6 @@
  */
 namespace ssh\Amqp\Exception;
 
-class AmqpException extends \Exception
+class QueueException extends AmqpException
 {
 }
